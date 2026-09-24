@@ -11,6 +11,7 @@
 
 mod config;
 mod paint;
+mod view;
 
 use config::Config;
 use paint::Painter;
@@ -110,7 +111,9 @@ fn main() {
         Some("-h" | "--help") => {
             println!("herald — desktop notifications at the top right");
             println!();
-            println!("  herald            run (D-Bus also starts it on the first notification)");
+            println!("  herald            in a terminal: the service's state and your notifications");
+            println!("                    without one: the service (D-Bus also starts it on demand)");
+            println!("  herald --daemon   the service, even from a terminal");
             println!("  herald --history  the last notifications, newest last");
             println!();
             println!("  click a box       close it");
@@ -123,7 +126,16 @@ fn main() {
             print_history();
             return;
         }
-        _ => {}
+        Some("--daemon") => {}
+        _ => {
+            // Inside a terminal (the fe2o3 launcher, a shell) herald shows
+            // what it has done; without one it is the service.
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                view::run();
+                return;
+            }
+        }
     }
     let cfg = Config::load();
     if let Err(e) = run(cfg) {
@@ -311,7 +323,7 @@ fn keycode_for(conn: &RustConnection, keysym: u32) -> Option<u8> {
     map.keysyms.chunks(per).position(|syms| syms.contains(&keysym)).map(|i| min + i as u8)
 }
 
-fn history_path() -> std::path::PathBuf {
+pub(crate) fn history_path() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".herald_history")
 }
 
@@ -333,22 +345,28 @@ fn log_history(n: &Note) {
     }
 }
 
-fn print_history() {
+/// One line of ~/.herald_history.
+pub(crate) struct Entry {
+    pub time: u64,
+    pub app: String,
+    pub title: String,
+    pub text: String,
+}
+
+pub(crate) fn read_history() -> Vec<Entry> {
     let text = std::fs::read_to_string(history_path()).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(4, '\t').collect();
+            (f.len() == 4).then(|| Entry { time: f[0].parse().unwrap_or(0), app: f[1].into(), title: f[2].into(), text: f[3].into() })
+        })
+        .collect()
+}
+
+fn print_history() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let lines: Vec<&str> = text.lines().collect();
-    for l in &lines[lines.len().saturating_sub(15)..] {
-        let f: Vec<&str> = l.splitn(4, '\t').collect();
-        if f.len() < 4 {
-            continue;
-        }
-        let age = now.saturating_sub(f[0].parse().unwrap_or(now));
-        let age = match age {
-            0..=59 => format!("{age} s"),
-            60..=3599 => format!("{} min", age / 60),
-            3600..=86399 => format!("{} h", age / 3600),
-            _ => format!("{} d", age / 86400),
-        };
-        println!("{age:>7} ago  {}: {}  {}", f[1], f[2], f[3]);
+    let list = read_history();
+    for e in &list[list.len().saturating_sub(15)..] {
+        println!("{:>7} ago  {}: {}  {}", view::age(now.saturating_sub(e.time)), e.app, e.title, e.text);
     }
 }

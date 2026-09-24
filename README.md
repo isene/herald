@@ -27,6 +27,7 @@ Exec=/path/to/herald
 | Close the newest | `Ctrl+Space` |
 | Close them all | `Ctrl+Shift+Space` |
 | See the last 15 | `herald --history` |
+| Look at it all | `herald` in a terminal: the service's state and every notification, `t` sends a test |
 
 herald holds the two keys only while a box is up. The rest of the time they belong to your other programs.
 
