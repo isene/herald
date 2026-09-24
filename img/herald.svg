@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="back" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" style="stop-color:#23202b"/>
+      <stop offset="100%" style="stop-color:#0a0910"/>
+    </radialGradient>
+  </defs>
+  <circle cx="128" cy="128" r="124" fill="url(#back)"/>
+
+  <!-- three notices stacked from the top, the newest brightest -->
+  <g stroke-width="6" fill="#191311">
+    <rect x="58" y="66" width="140" height="36" rx="5" stroke="#f74c00" opacity="0.45"/>
+    <rect x="58" y="110" width="140" height="36" rx="5" stroke="#f74c00" opacity="0.7"/>
+    <rect x="58" y="154" width="140" height="36" rx="5" stroke="#ffb066"/>
+  </g>
+  <g stroke-linecap="round" stroke-width="7">
+    <line x1="72" y1="84" x2="130" y2="84" stroke="#f74c00" opacity="0.45"/>
+    <line x1="72" y1="128" x2="150" y2="128" stroke="#f74c00" opacity="0.7"/>
+    <line x1="72" y1="172" x2="170" y2="172" stroke="#ffb066"/>
+  </g>
+
+  <circle cx="128" cy="128" r="124" fill="none" stroke="#f74c00" stroke-width="3" stroke-opacity=".9"/>
+  <circle cx="128" cy="128" r="118" fill="none" stroke="#ffb066" stroke-width="1" stroke-opacity=".5"/>
+</svg>
