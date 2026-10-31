@@ -22,7 +22,12 @@ pub struct Config {
     pub timeouts: [u64; 3],
     /// Titles that go to the history but never on screen.
     pub skip: Vec<String>,
+    /// The LCARS look of Star Trek's screens (`lcars = 1`).
+    pub lcars: bool,
 }
+
+/// LCARS bars for low, normal and critical: blue, orange, red.
+pub const LCARS: [u32; 3] = [0x9999FF, 0xFF9900, 0xCC6666];
 
 impl Default for Config {
     fn default() -> Self {
@@ -41,6 +46,7 @@ impl Default for Config {
             critical: (0xB7472A, 0x191311),
             timeouts: [4, 6, 8],
             skip: Vec::new(),
+            lcars: false,
         }
     }
 }
@@ -83,6 +89,7 @@ impl Config {
                 "normal_timeout" => c.timeouts[1] = v.parse().unwrap_or(c.timeouts[1]),
                 "critical_timeout" => c.timeouts[2] = v.parse().unwrap_or(c.timeouts[2]),
                 "skip" => c.skip.push(v.to_string()),
+                "lcars" => c.lcars = v == "1",
                 _ => {}
             }
         }
@@ -90,6 +97,9 @@ impl Config {
     }
 
     pub fn colors(&self, urgency: u8) -> (u32, u32) {
+        if self.lcars {
+            return (LCARS[urgency.min(2) as usize], 0);
+        }
         match urgency {
             0 => self.low,
             2 => self.critical,

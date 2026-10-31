@@ -46,6 +46,7 @@ herald holds the two keys only while a box is up. The rest of the time they belo
 | `low_bg`, `normal_bg`, `critical_bg` | `#191311` | Background |
 | `low_timeout`, `normal_timeout`, `critical_timeout` | `4`, `6`, `8` | Seconds on screen; `0` stays until clicked |
 | `skip` | none | A title to keep off the screen (it still goes in the history). Repeat for more |
+| `lcars` | `0` | `1` draws each box like the screens in Star Trek: the title in black on a bar of colour (blue, orange or red by urgency), joined by a round elbow to a bar down the left, the text in peach on black. The colour keys above then do nothing |
 
 A sender can set its own time, or ask for a box that stays. A notification sent again with the same id changes its box in place.
 

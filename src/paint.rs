@@ -12,6 +12,9 @@ use std::collections::HashMap;
 /// At most this many lines of text in one box.
 const MAX_LINES: usize = 12;
 
+/// The text colour of an LCARS box.
+const PEACH: u32 = 0xFFCC99;
+
 /// A drawn letter: where its box starts from the pen and the baseline,
 /// its size, and how much of each pixel it covers (0..255).
 struct Glyph {
@@ -34,6 +37,7 @@ pub struct Painter {
     padding: usize,
     frame: usize,
     colors: [(u32, u32); 3],
+    lcars: bool,
     cache: RefCell<HashMap<(char, bool), Glyph>>,
 }
 
@@ -56,7 +60,8 @@ impl Painter {
             width: cfg.width,
             padding: cfg.padding as usize,
             frame: cfg.frame as usize,
-            colors: [cfg.low, cfg.normal, cfg.critical],
+            colors: [cfg.colors(0), cfg.colors(1), cfg.colors(2)],
+            lcars: cfg.lcars,
             regular,
             bold,
             cache: RefCell::new(HashMap::new()),
@@ -65,6 +70,9 @@ impl Painter {
 
     /// The box as (width, height, pixels in the X server's BGRX order).
     pub fn paint(&self, n: &Note) -> (u16, u16, Vec<u8>) {
+        if self.lcars {
+            return self.paint_lcars(n);
+        }
         let (fg, bg) = self.colors[n.urgency.min(2) as usize];
         let inner = self.width as usize - 2 * (self.frame + self.padding);
         let cols = (inner / self.adv).max(1);
@@ -89,6 +97,55 @@ impl Painter {
             for c in text.chars() {
                 self.glyph(&mut px, w, h, c, *bold, pen, base, fg, bg);
                 pen += self.adv;
+            }
+        }
+        (w as u16, h as u16, px)
+    }
+
+    /// The LCARS look: the title in black on a bar of colour, joined by a
+    /// rounded elbow to a bar down the left side, the text in peach on black.
+    fn paint_lcars(&self, n: &Note) -> (u16, u16, Vec<u8>) {
+        let (c, _) = self.colors[n.urgency.min(2) as usize];
+        let w = self.width as usize;
+        let side = 2 * self.adv;
+        let left = side + 2 * self.padding;
+        let cols = (w.saturating_sub(left + self.padding) / self.adv).max(1);
+        let mut title = wrap(&plain(&n.summary), cols);
+        if title.is_empty() {
+            title = wrap(&plain(&n.app), cols);
+        }
+        title.truncate(MAX_LINES);
+        let mut body = wrap(&plain(&n.body), cols);
+        body.truncate(MAX_LINES - title.len().min(MAX_LINES));
+        let top = title.len().max(1) * self.line_h + self.padding;
+        let h = top + body.len() * self.line_h + 2 * self.padding;
+        let r = top.min(side).min(h / 2) as f32; // outer corners
+        let ri = (top / 2) as f32; // the inside of the elbow
+        let mut px = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+                let a = if y < top || x < side {
+                    let cy = if fy < r { r } else { h as f32 - r };
+                    if fx < r && (fy < r || fy > h as f32 - r) { r - ((r - fx).hypot(cy - fy)) + 0.5 } else { 1.0 }
+                } else if fx < side as f32 + ri && fy < top as f32 + ri {
+                    (side as f32 + ri - fx).hypot(top as f32 + ri - fy) - ri + 0.5
+                } else {
+                    0.0
+                };
+                set(&mut px, w, x, y, blend(c, 0, (a.clamp(0.0, 1.0) * 255.0) as u32));
+            }
+        }
+        for (i, line) in title.iter().enumerate() {
+            let base = self.padding / 2 + i * self.line_h + self.ascent;
+            for (k, ch) in line.chars().enumerate() {
+                self.glyph(&mut px, w, h, ch, true, left + k * self.adv, base, 0, c);
+            }
+        }
+        for (i, line) in body.iter().enumerate() {
+            let base = top + self.padding + i * self.line_h + self.ascent;
+            for (k, ch) in line.chars().enumerate() {
+                self.glyph(&mut px, w, h, ch, false, left + k * self.adv, base, PEACH, 0);
             }
         }
         (w as u16, h as u16, px)
@@ -210,6 +267,23 @@ mod tests {
         assert_eq!(wrap("one two three", 7), ["one two", "three"]);
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("a\nb", 10), ["a", "b"]);
+    }
+
+    #[test]
+    fn an_lcars_box_has_round_corners_and_a_bar_of_colour() {
+        let cfg = Config::parse("lcars = 1");
+        let Ok(p) = Painter::new(&cfg) else { return }; // no DejaVu here
+        let n = Note { id: 1, app: "a".into(), summary: "Title".into(), body: "one\ntwo".into(), urgency: 1, timeout: -1 };
+        let (w, h, px) = p.paint(&n);
+        let at = |x: usize, y: usize| {
+            let i = (y * w as usize + x) * 4;
+            (px[i + 2] as u32) << 16 | (px[i + 1] as u32) << 8 | px[i] as u32
+        };
+        assert_eq!(at(0, 0), 0, "the top left corner is cut round");
+        assert_eq!(at(0, h as usize - 1), 0, "and so is the bottom left");
+        assert_eq!(at(w as usize - 1, 1), 0xFF9900, "the title bar runs to the right edge");
+        assert_eq!(at(2, h as usize / 2 + 4), 0xFF9900, "the bar runs down the left side");
+        assert_eq!(at(w as usize - 1, h as usize - 1), 0, "the text sits on black");
     }
 
     #[test]
