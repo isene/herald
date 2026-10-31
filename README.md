@@ -31,6 +31,12 @@ Exec=/path/to/herald
 
 herald holds the two keys only while a box is up. The rest of the time they belong to your other programs.
 
+A notification with the hint `category` set to `red-alert` is a red alert: big red letters between two red bars, pulsing for four seconds, then lit until it is closed. [drain](https://github.com/isene/drain) sends one when the battery runs low:
+
+```sh
+notify-send -u critical -h string:category:red-alert "RED ALERT" "Battery at 9 %."
+```
+
 ## Settings
 
 `~/.heraldrc`, one `key = value` per line. Every key is optional:

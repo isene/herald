@@ -11,6 +11,9 @@ use std::collections::HashMap;
 
 /// At most this many lines of text in one box.
 const MAX_LINES: usize = 12;
+/// A red alert's colour, lit and at the dark half of a pulse.
+const RED: u32 = 0xff3322;
+const RED_DARK: u32 = 0x551008;
 
 
 /// A drawn letter: where its box starts from the pen and the baseline,
@@ -72,6 +75,9 @@ impl Painter {
 
     /// The box as (width, height, pixels in the X server's BGRX order).
     pub fn paint(&self, n: &Note) -> (u16, u16, Vec<u8>) {
+        if n.alert {
+            return self.paint_alert(n, true);
+        }
         if self.elbow {
             return self.paint_elbow(n);
         }
@@ -154,6 +160,55 @@ impl Painter {
         (w as u16, h as u16, px)
     }
 
+    /// A red alert: the title in big letters between two red bars with
+    /// round ends, the text below. `lit` false is the dark half of a pulse.
+    pub fn paint_alert(&self, n: &Note, lit: bool) -> (u16, u16, Vec<u8>) {
+        let red = if lit { RED } else { RED_DARK };
+        let text = self.text_fg.unwrap_or(0xffcccc);
+        let w = self.width as usize;
+        let pad = self.padding.max(4);
+        let bar = self.line_h / 2 + 2;
+        let font = self.bold.as_ref().unwrap_or(&self.regular);
+        let title = plain(&n.summary);
+        let wide = |sc: PxScale| title.chars().map(|c| font.as_scaled(sc).h_advance(font.glyph_id(c))).sum::<f32>();
+        let mut big = PxScale::from(self.scale.y * 2.2);
+        let room = (w - 2 * pad) as f32;
+        if wide(big) > room {
+            big = PxScale::from(big.y * room / wide(big));
+        }
+        let sf = font.as_scaled(big);
+        let big_h = (sf.ascent() - sf.descent()).ceil() as usize;
+        let cols = (w - 2 * pad) / self.adv;
+        let mut body = wrap(&plain(&n.body), cols.max(1));
+        body.truncate(MAX_LINES - 2);
+        let h = 2 * bar + 4 * pad + big_h + body.len() * self.line_h;
+        let mut px = vec![0u8; w * h * 4];
+        pill(&mut px, w, 0, bar, red);
+        pill(&mut px, w, h - bar, bar, red);
+        let mut x = (w as f32 - wide(big)) / 2.0;
+        let base = (bar + 2 * pad) as f32 + sf.ascent();
+        for c in title.chars() {
+            let g = font.glyph_id(c).with_scale_and_position(big, ab_glyph::point(x, base));
+            x += sf.h_advance(font.glyph_id(c));
+            let Some(o) = font.outline_glyph(g) else { continue };
+            let b = o.px_bounds();
+            o.draw(|gx, gy, v| {
+                let (px_x, px_y) = (b.min.x as i32 + gx as i32, b.min.y as i32 + gy as i32);
+                if px_x >= 0 && px_y >= 0 && (px_x as usize) < w && (px_y as usize) < h {
+                    set(&mut px, w, px_x as usize, px_y as usize, blend(red, 0, (v.clamp(0.0, 1.0) * 255.0) as u32));
+                }
+            });
+        }
+        for (i, line) in body.iter().enumerate() {
+            let base = bar + 3 * pad + big_h + i * self.line_h + self.ascent;
+            let left = (w - line.chars().count() * self.adv) / 2;
+            for (k, ch) in line.chars().enumerate() {
+                self.glyph(&mut px, w, h, ch, false, left + k * self.adv, base, text, 0);
+            }
+        }
+        (w as u16, h as u16, px)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn glyph(&self, px: &mut [u8], w: usize, h: usize, c: char, bold: bool, pen: usize, base: usize, fg: u32, bg: u32) {
         let mut cache = self.cache.borrow_mut();
@@ -187,6 +242,19 @@ impl Painter {
                 }
                 set(px, w, x as usize, y as usize, blend(fg, bg, a));
             }
+        }
+    }
+}
+
+/// A bar `bh` high across the whole box from row `y0`, its ends round.
+fn pill(px: &mut [u8], w: usize, y0: usize, bh: usize, rgb: u32) {
+    let r = bh as f32 / 2.0;
+    for y in y0..y0 + bh {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 + 0.5, (y - y0) as f32 + 0.5);
+            let cx = fx.clamp(r, w as f32 - r);
+            let a = (r - (fx - cx).hypot(fy - r) + 0.5).clamp(0.0, 1.0);
+            set(px, w, x, y, blend(rgb, 0, (a * 255.0) as u32));
         }
     }
 }
@@ -276,7 +344,7 @@ mod tests {
     fn an_elbow_box_has_round_corners_and_a_bar_of_colour() {
         let cfg = Config::parse("shape = elbow\nnormal_fg = #ff9900\nnormal_bg = #000000");
         let Ok(p) = Painter::new(&cfg) else { return }; // no DejaVu here
-        let n = Note { id: 1, app: "a".into(), summary: "Title".into(), body: "one\ntwo".into(), urgency: 1, timeout: -1 };
+        let n = Note { id: 1, app: "a".into(), summary: "Title".into(), body: "one\ntwo".into(), urgency: 1, timeout: -1, alert: false };
         let (w, h, px) = p.paint(&n);
         let at = |x: usize, y: usize| {
             let i = (y * w as usize + x) * 4;
@@ -294,5 +362,20 @@ mod tests {
         assert_eq!(blend(0xff0000, 0x000000, 255), 0xff0000);
         assert_eq!(blend(0xff0000, 0x000000, 0), 0);
         assert_eq!(blend(0xc8c8c8, 0x000000, 128) & 0xff, 100);
+    }
+
+    #[test]
+    fn a_red_alert_pulses_between_two_reds() {
+        let cfg = Config::default();
+        let p = Painter::new(&cfg).unwrap();
+        let n = Note { id: 1, app: "drain".into(), summary: "RED ALERT".into(), body: "Battery at 9 %.".into(), urgency: 2, timeout: 0, alert: true };
+        let (w, h, lit) = p.paint(&n);
+        let (_, h2, dark) = p.paint_alert(&n, false);
+        assert_eq!(h, h2);
+        let at = |px: &[u8], x: usize, y: usize| { let i = (y * w as usize + x) * 4; (px[i + 2], px[i + 1], px[i]) };
+        assert_eq!(at(&lit, w as usize / 2, 3), (0xff, 0x33, 0x22));
+        assert_eq!(at(&dark, w as usize / 2, 3), (0x55, 0x10, 0x08));
+        assert_eq!(at(&lit, 0, 0), (0, 0, 0)); // a round end
+        assert!(lit.chunks(4).filter(|c| c[2] == 0xff && c[1] == 0x33).count() > 2 * (w as usize) * 8);
     }
 }

@@ -50,7 +50,13 @@ struct Note {
     urgency: u8,
     /// Milliseconds: -1 the urgency's own time, 0 until clicked.
     timeout: i32,
+    /// Hint `category` = `red-alert` (drain sends it on a low battery).
+    alert: bool,
 }
+
+/// A red alert pulses this many times, then stays lit.
+const PULSES: u8 = 8;
+const PULSE: Duration = Duration::from_millis(500);
 
 /// A box on screen.
 struct Popup {
@@ -60,6 +66,10 @@ struct Popup {
     h: u16,
     pixels: Vec<u8>,
     until: Option<Instant>,
+    /// A red alert's other picture, swapped in at each pulse.
+    alt: Option<Vec<u8>>,
+    pulses: u8,
+    pulse_at: Option<Instant>,
 }
 
 /// The D-Bus side: it only hands notes to the main loop.
@@ -88,7 +98,8 @@ impl Server {
     ) -> u32 {
         let id = if replaces_id > 0 { replaces_id } else { self.next.fetch_add(1, Ordering::Relaxed) };
         let urgency = hints.get("urgency").and_then(|v| u8::try_from(v).ok()).unwrap_or(1);
-        let note = Note { id, app: app_name, summary, body, urgency, timeout: expire_timeout };
+        let alert = hints.get("category").and_then(|v| <&str>::try_from(&**v).ok()) == Some("red-alert");
+        let note = Note { id, app: app_name, summary, body, urgency, timeout: expire_timeout, alert };
         let _ = self.tx.lock().map(|t| t.send(Msg::Show(note)));
         id
     }
@@ -183,7 +194,7 @@ fn run(cfg: Config) -> Result<(), String> {
 
     loop {
         // Block until something happens, or until the next box is due.
-        let due = popups.iter().filter_map(|p| p.until).min();
+        let due = popups.iter().flat_map(|p| [p.until, p.pulse_at]).flatten().min();
         let msg = match due {
             None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -198,6 +209,8 @@ fn run(cfg: Config) -> Result<(), String> {
                     continue;
                 }
                 let (w, h, pixels) = painter.paint(&note);
+                let alt = note.alert.then(|| painter.paint_alert(&note, false).2);
+                let (pulses, pulse_at) = if alt.is_some() { (PULSES, Some(Instant::now() + PULSE)) } else { (0, None) };
                 let until = match note.timeout {
                     0 => None,
                     t if t > 0 => Some(Instant::now() + Duration::from_millis(t as u64)),
@@ -209,17 +222,18 @@ fn run(cfg: Config) -> Result<(), String> {
                     p.h = h;
                     p.pixels = pixels;
                     p.until = until;
+                    (p.alt, p.pulses, p.pulse_at) = (alt, pulses, pulse_at);
                     let _ = conn.configure_window(p.win, &x11rb::protocol::xproto::ConfigureWindowAux::new().width(w as u32).height(h as u32));
                     put(&conn, p);
                 } else {
                     let win = conn.generate_id().map_err(|e| e.to_string())?;
                     let aux = CreateWindowAux::new()
                         .override_redirect(1)
-                        .background_pixel(cfg.colors(note.urgency).1)
+                        .background_pixel(if note.alert { 0 } else { cfg.colors(note.urgency).1 })
                         .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS);
                     let _ = conn.create_window(0, win, root, 0, 0, w, h, 0, WindowClass::INPUT_OUTPUT, 0, &aux);
                     let _ = conn.map_window(win);
-                    popups.push(Popup { id: note.id, win, w, h, pixels, until });
+                    popups.push(Popup { id: note.id, win, w, h, pixels, until, alt, pulses, pulse_at });
                 }
             }
             Ok(Msg::Close(id)) => closed.push((id, 3)),
@@ -245,6 +259,17 @@ fn run(cfg: Config) -> Result<(), String> {
                 let p = popups.remove(i);
                 let _ = conn.destroy_window(p.win);
                 let _ = bus.emit_signal(None::<&str>, PATH, IFACE, "NotificationClosed", &(id, reason));
+            }
+        }
+        for p in popups.iter_mut().filter(|p| p.pulse_at.is_some_and(|t| t <= now)) {
+            if let Some(alt) = p.alt.as_mut() {
+                std::mem::swap(&mut p.pixels, alt);
+            }
+            put(&conn, p);
+            p.pulses -= 1;
+            p.pulse_at = (p.pulses > 0).then(|| now + PULSE);
+            if p.pulses == 0 {
+                p.alt = None;
             }
         }
         place(&conn, &cfg, &popups, screen_w);
