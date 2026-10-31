@@ -22,12 +22,14 @@ pub struct Config {
     pub timeouts: [u64; 3],
     /// Titles that go to the history but never on screen.
     pub skip: Vec<String>,
-    /// The LCARS look of Star Trek's screens (`lcars = 1`).
-    pub lcars: bool,
+    /// `shape = elbow`: the title on a bar of the urgency's colour, joined
+    /// by a round elbow to a bar down the left side (the LCARS view).
+    pub elbow: bool,
+    /// Elbow: the title's colour on its bar, and the text's (the
+    /// urgency's colour when unset).
+    pub title_fg: u32,
+    pub text_fg: Option<u32>,
 }
-
-/// LCARS bars for low, normal and critical: blue, orange, red.
-pub const LCARS: [u32; 3] = [0x9999FF, 0xFF9900, 0xCC6666];
 
 impl Default for Config {
     fn default() -> Self {
@@ -46,7 +48,9 @@ impl Default for Config {
             critical: (0xB7472A, 0x191311),
             timeouts: [4, 6, 8],
             skip: Vec::new(),
-            lcars: false,
+            elbow: false,
+            title_fg: 0x000000,
+            text_fg: None,
         }
     }
 }
@@ -89,7 +93,9 @@ impl Config {
                 "normal_timeout" => c.timeouts[1] = v.parse().unwrap_or(c.timeouts[1]),
                 "critical_timeout" => c.timeouts[2] = v.parse().unwrap_or(c.timeouts[2]),
                 "skip" => c.skip.push(v.to_string()),
-                "lcars" => c.lcars = v == "1",
+                "shape" => c.elbow = v == "elbow",
+                "title_fg" => c.title_fg = col(c.title_fg),
+                "text_fg" => c.text_fg = Some(col(0xFFFFFF)),
                 _ => {}
             }
         }
@@ -97,9 +103,6 @@ impl Config {
     }
 
     pub fn colors(&self, urgency: u8) -> (u32, u32) {
-        if self.lcars {
-            return (LCARS[urgency.min(2) as usize], 0);
-        }
         match urgency {
             0 => self.low,
             2 => self.critical,

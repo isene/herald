@@ -12,8 +12,6 @@ use std::collections::HashMap;
 /// At most this many lines of text in one box.
 const MAX_LINES: usize = 12;
 
-/// The text colour of an LCARS box.
-const PEACH: u32 = 0xFFCC99;
 
 /// A drawn letter: where its box starts from the pen and the baseline,
 /// its size, and how much of each pixel it covers (0..255).
@@ -37,7 +35,9 @@ pub struct Painter {
     padding: usize,
     frame: usize,
     colors: [(u32, u32); 3],
-    lcars: bool,
+    elbow: bool,
+    title_fg: u32,
+    text_fg: Option<u32>,
     cache: RefCell<HashMap<(char, bool), Glyph>>,
 }
 
@@ -61,7 +61,9 @@ impl Painter {
             padding: cfg.padding as usize,
             frame: cfg.frame as usize,
             colors: [cfg.colors(0), cfg.colors(1), cfg.colors(2)],
-            lcars: cfg.lcars,
+            elbow: cfg.elbow,
+            title_fg: cfg.title_fg,
+            text_fg: cfg.text_fg,
             regular,
             bold,
             cache: RefCell::new(HashMap::new()),
@@ -70,8 +72,8 @@ impl Painter {
 
     /// The box as (width, height, pixels in the X server's BGRX order).
     pub fn paint(&self, n: &Note) -> (u16, u16, Vec<u8>) {
-        if self.lcars {
-            return self.paint_lcars(n);
+        if self.elbow {
+            return self.paint_elbow(n);
         }
         let (fg, bg) = self.colors[n.urgency.min(2) as usize];
         let inner = self.width as usize - 2 * (self.frame + self.padding);
@@ -102,10 +104,11 @@ impl Painter {
         (w as u16, h as u16, px)
     }
 
-    /// The LCARS look: the title in black on a bar of colour, joined by a
-    /// rounded elbow to a bar down the left side, the text in peach on black.
-    fn paint_lcars(&self, n: &Note) -> (u16, u16, Vec<u8>) {
-        let (c, _) = self.colors[n.urgency.min(2) as usize];
+    /// `shape = elbow`: the title on a bar of the urgency's colour, joined
+    /// by a rounded elbow to a bar down the left side, the text below.
+    fn paint_elbow(&self, n: &Note) -> (u16, u16, Vec<u8>) {
+        let (c, bg) = self.colors[n.urgency.min(2) as usize];
+        let text = self.text_fg.unwrap_or(c);
         let w = self.width as usize;
         let side = 2 * self.adv;
         let left = side + 2 * self.padding;
@@ -133,19 +136,19 @@ impl Painter {
                 } else {
                     0.0
                 };
-                set(&mut px, w, x, y, blend(c, 0, (a.clamp(0.0, 1.0) * 255.0) as u32));
+                set(&mut px, w, x, y, blend(c, bg, (a.clamp(0.0, 1.0) * 255.0) as u32));
             }
         }
         for (i, line) in title.iter().enumerate() {
             let base = self.padding / 2 + i * self.line_h + self.ascent;
             for (k, ch) in line.chars().enumerate() {
-                self.glyph(&mut px, w, h, ch, true, left + k * self.adv, base, 0, c);
+                self.glyph(&mut px, w, h, ch, true, left + k * self.adv, base, self.title_fg, c);
             }
         }
         for (i, line) in body.iter().enumerate() {
             let base = top + self.padding + i * self.line_h + self.ascent;
             for (k, ch) in line.chars().enumerate() {
-                self.glyph(&mut px, w, h, ch, false, left + k * self.adv, base, PEACH, 0);
+                self.glyph(&mut px, w, h, ch, false, left + k * self.adv, base, text, bg);
             }
         }
         (w as u16, h as u16, px)
@@ -270,8 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn an_lcars_box_has_round_corners_and_a_bar_of_colour() {
-        let cfg = Config::parse("lcars = 1");
+    fn an_elbow_box_has_round_corners_and_a_bar_of_colour() {
+        let cfg = Config::parse("shape = elbow\nnormal_fg = #ff9900\nnormal_bg = #000000");
         let Ok(p) = Painter::new(&cfg) else { return }; // no DejaVu here
         let n = Note { id: 1, app: "a".into(), summary: "Title".into(), body: "one\ntwo".into(), urgency: 1, timeout: -1 };
         let (w, h, px) = p.paint(&n);
