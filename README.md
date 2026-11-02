@@ -32,7 +32,7 @@ Exec=/path/to/herald
 
 herald holds the two keys only while a box is up. The rest of the time they belong to your other programs.
 
-During a quiet spell no boxes show, except critical ones. At the end one box lists what came in, and it stays until you click it. Bind the command to a key in your window manager, such as `bind Mod4+n exec herald --quiet` in [tile](https://github.com/isene/tile). The spell costs one timer, for its end.
+During a quiet spell no boxes show, except critical ones. At the end one box lists what came in, and it stays until you click it. Bind the command to a key in your window manager, such as `bind Mod4+m exec herald --quiet` in [tile](https://github.com/isene/tile) (m for mute; frame keeps Mod4+n for night light). The spell costs one timer, for its end.
 
 A notification with the hint `category` set to `red-alert` is a red alert: big red letters between two red bars, pulsing for four seconds, then lit until it is closed. [drain](https://github.com/isene/drain) sends one when the battery runs low:
 
