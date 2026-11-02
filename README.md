@@ -27,9 +27,12 @@ Exec=/path/to/herald
 | Close the newest | `Ctrl+Space` |
 | Close them all | `Ctrl+Shift+Space` |
 | See the last 15 | `herald --history` |
+| Quiet for a while | `herald --quiet` (50 minutes) or `herald --quiet 25`; run it again to end early |
 | Look at it all | `herald` in a terminal: the service's state and every notification, `t` sends a test |
 
 herald holds the two keys only while a box is up. The rest of the time they belong to your other programs.
+
+During a quiet spell no boxes show, except critical ones. At the end one box lists what came in, and it stays until you click it. Bind the command to a key in your window manager, such as `bind Mod4+n exec herald --quiet` in [tile](https://github.com/isene/tile). The spell costs one timer, for its end.
 
 A notification with the hint `category` set to `red-alert` is a red alert: big red letters between two red bars, pulsing for four seconds, then lit until it is closed. [drain](https://github.com/isene/drain) sends one when the battery runs low:
 

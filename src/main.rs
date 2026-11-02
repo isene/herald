@@ -4,7 +4,8 @@
 //! `notify-send` and every desktop program talk to, and shows each
 //! notification as a small box at the top right of the screen. A box
 //! closes after its time runs out, or when you click it. Ctrl+Space
-//! closes the newest, Ctrl+Shift+Space all of them.
+//! closes the newest, Ctrl+Shift+Space all of them. `herald --quiet`
+//! keeps notifications off the screen for a while, then lists them.
 //!
 //! Between notifications it sleeps in a blocking read: no timer runs
 //! unless a box is on screen.
@@ -40,7 +41,16 @@ enum Msg {
     Expose(u32),
     /// Ctrl+Space (false) or Ctrl+Shift+Space (true).
     Key(bool),
+    /// Start a quiet spell of this many minutes, or end the one running.
+    Quiet(u32),
 }
+
+/// The id of herald's own boxes, the ones about a quiet spell.
+const QUIET_ID: u32 = u32::MAX;
+/// Minutes of quiet when `herald --quiet` names none.
+const QUIET_MINUTES: u32 = 50;
+/// A box lists at most this many of the notifications that waited.
+const QUIET_LIST: usize = 6;
 
 struct Note {
     id: u32,
@@ -113,6 +123,18 @@ impl Server {
     }
 }
 
+/// herald's own commands, beside the standard interface.
+struct Control {
+    tx: Mutex<Sender<Msg>>,
+}
+
+#[zbus::interface(name = "org.isene.Herald")]
+impl Control {
+    fn quiet(&self, minutes: u32) {
+        let _ = self.tx.lock().map(|t| t.send(Msg::Quiet(minutes)));
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("-v" | "--version") => {
@@ -126,6 +148,8 @@ fn main() {
             println!("                    without one: the service (D-Bus also starts it on demand)");
             println!("  herald --daemon   the service, even from a terminal");
             println!("  herald --history  the last notifications, newest last");
+            println!("  herald --quiet [MIN]  no boxes for MIN minutes ({QUIET_MINUTES}), then a list of what came;");
+            println!("                    run again to end it early. Critical ones still show");
             println!();
             println!("  click a box       close it");
             println!("  Ctrl+Space        close the newest; with Shift, all");
@@ -135,6 +159,16 @@ fn main() {
         }
         Some("--history") => {
             print_history();
+            return;
+        }
+        Some("--quiet") => {
+            let minutes = std::env::args().nth(2).and_then(|m| m.parse().ok()).unwrap_or(QUIET_MINUTES);
+            let sent = zbus::blocking::Connection::session()
+                .and_then(|c| c.call_method(Some(IFACE), PATH, Some("org.isene.Herald"), "Quiet", &minutes).map(|_| ()));
+            if let Err(e) = sent {
+                eprintln!("herald: {e}");
+                std::process::exit(1);
+            }
             return;
         }
         Some("--daemon") => {}
@@ -166,6 +200,7 @@ fn run(cfg: Config) -> Result<(), String> {
     let bus = zbus::blocking::connection::Builder::session()
         .and_then(|b| b.name(IFACE))
         .and_then(|b| b.serve_at(PATH, server))
+        .and_then(|b| b.serve_at(PATH, Control { tx: Mutex::new(tx.clone()) }))
         .and_then(|b| b.build())
         .map_err(|e| format!("cannot take {IFACE} on the session bus (is dunst running?): {e}"))?;
 
@@ -173,8 +208,10 @@ fn run(cfg: Config) -> Result<(), String> {
     {
         let conn = conn.clone();
         let tx = tx.clone();
+        // When the X server goes (frame restarts), herald goes too; the
+        // herald the new session starts takes over the bus name.
         std::thread::spawn(move || loop {
-            let Ok(ev) = conn.wait_for_event() else { return };
+            let Ok(ev) = conn.wait_for_event() else { std::process::exit(0) };
             let msg = match ev {
                 Event::ButtonPress(e) => Msg::Click(e.event),
                 Event::Expose(e) if e.count == 0 => Msg::Expose(e.window),
@@ -191,10 +228,14 @@ fn run(cfg: Config) -> Result<(), String> {
     let space = keycode_for(&conn, 0x20);
     let mut popups: Vec<Popup> = Vec::new();
     let mut grabbed = false;
+    // During a quiet spell notifications wait here instead of showing.
+    let mut quiet_until: Option<Instant> = None;
+    let mut held: Vec<Note> = Vec::new();
 
     loop {
-        // Block until something happens, or until the next box is due.
-        let due = popups.iter().flat_map(|p| [p.until, p.pulse_at]).flatten().min();
+        // Block until something happens, or until the next box or the end
+        // of a quiet spell is due.
+        let due = popups.iter().flat_map(|p| [p.until, p.pulse_at]).flatten().chain(quiet_until).min();
         let msg = match due {
             None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
@@ -204,8 +245,15 @@ fn run(cfg: Config) -> Result<(), String> {
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
             Err(RecvTimeoutError::Timeout) => {}
             Ok(Msg::Show(note)) => {
-                log_history(&note);
+                if note.id != QUIET_ID {
+                    log_history(&note);
+                }
                 if cfg.skip.iter().any(|s| *s == note.summary) {
+                    continue;
+                }
+                if quiet_until.is_some() && note.id != QUIET_ID && note.urgency < 2 && !note.alert {
+                    held.retain(|h| h.id != note.id);
+                    held.push(note);
                     continue;
                 }
                 let (w, h, pixels) = painter.paint(&note);
@@ -236,7 +284,19 @@ fn run(cfg: Config) -> Result<(), String> {
                     popups.push(Popup { id: note.id, win, w, h, pixels, until, alt, pulses, pulse_at });
                 }
             }
-            Ok(Msg::Close(id)) => closed.push((id, 3)),
+            Ok(Msg::Close(id)) => {
+                held.retain(|h| h.id != id);
+                closed.push((id, 3));
+            }
+            Ok(Msg::Quiet(minutes)) => {
+                let note = if quiet_until.take().is_some() || minutes == 0 {
+                    quiet_over(std::mem::take(&mut held))
+                } else {
+                    quiet_until = Some(Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
+                    quiet_start(minutes)
+                };
+                let _ = tx.send(Msg::Show(note));
+            }
             Ok(Msg::Click(win)) => {
                 if let Some(p) = popups.iter().find(|p| p.win == win) {
                     closed.push((p.id, 2));
@@ -253,6 +313,10 @@ fn run(cfg: Config) -> Result<(), String> {
             }
         }
         let now = Instant::now();
+        if quiet_until.is_some_and(|q| q <= now) {
+            quiet_until = None;
+            let _ = tx.send(Msg::Show(quiet_over(std::mem::take(&mut held))));
+        }
         closed.extend(popups.iter().filter(|p| p.until.is_some_and(|u| u <= now)).map(|p| (p.id, 1)));
         for (id, reason) in closed {
             if let Some(i) = popups.iter().position(|p| p.id == id) {
@@ -286,6 +350,31 @@ fn run(cfg: Config) -> Result<(), String> {
         }
         let _ = conn.flush();
     }
+}
+
+fn quiet_start(minutes: u32) -> Note {
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    let body = format!("Notifications wait {minutes} {unit}, critical ones excepted. The same key ends it.");
+    Note { id: QUIET_ID, app: "herald".into(), summary: "Quiet".into(), body, urgency: 0, timeout: -1, alert: false }
+}
+
+/// The box at the end of a quiet spell: what came in meanwhile. It stays
+/// until clicked when something did.
+fn quiet_over(held: Vec<Note>) -> Note {
+    let summary = match held.len() {
+        0 => "Quiet over: nothing came in".to_string(),
+        1 => "Quiet over: 1 came in".to_string(),
+        n => format!("Quiet over: {n} came in"),
+    };
+    let mut lines: Vec<String> = held.iter().take(QUIET_LIST).map(|h| {
+        let title = paint::plain(&h.summary);
+        if h.app.is_empty() { title } else { format!("{}: {title}", h.app) }
+    }).collect();
+    if held.len() > QUIET_LIST {
+        lines.push("The rest: herald --history".into());
+    }
+    let timeout = if held.is_empty() { -1 } else { 0 };
+    Note { id: QUIET_ID, app: "herald".into(), summary, body: lines.join("\n"), urgency: 1, timeout, alert: false }
 }
 
 /// Stack the boxes down from the top right corner, oldest on top.
@@ -393,5 +482,25 @@ fn print_history() {
     let list = read_history();
     for e in &list[list.len().saturating_sub(15)..] {
         println!("{:>7} ago  {}: {}  {}", view::age(now.saturating_sub(e.time)), e.app, e.title, e.text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(id: u32, app: &str, summary: &str) -> Note {
+        Note { id, app: app.into(), summary: summary.into(), body: String::new(), urgency: 1, timeout: -1, alert: false }
+    }
+
+    #[test]
+    fn the_end_of_a_quiet_spell_lists_what_came() {
+        let none = quiet_over(Vec::new());
+        assert_eq!((none.summary.as_str(), none.timeout), ("Quiet over: nothing came in", -1));
+        let two = quiet_over(vec![note(1, "kastrup", "New mail"), note(2, "", "Build done")]);
+        assert_eq!((two.summary.as_str(), two.body.as_str(), two.timeout), ("Quiet over: 2 came in", "kastrup: New mail\nBuild done", 0));
+        let many = quiet_over((0..9).map(|i| note(i, "a", "t")).collect());
+        assert_eq!(many.body.lines().count(), QUIET_LIST + 1);
+        assert!(many.body.ends_with("herald --history"));
     }
 }
