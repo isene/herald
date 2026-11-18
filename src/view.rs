@@ -102,14 +102,15 @@ fn draw(list: &[Entry], top: usize, note: &str) {
 
     // The bar along the bottom, the version at the far right.
     let foot = if note.is_empty() { "t test · c clear · j k move · q quit".to_string() } else { note.to_string() };
-    let version = format!("v{} ", env!("CARGO_PKG_VERSION"));
-    let foot = format!(" {}", take(&foot, w.saturating_sub(version.len() + 3)));
-    let pad = w.saturating_sub(crust::display_width(&foot) + version.len());
+    let version = crust::version_tag("herald", env!("CARGO_PKG_VERSION"));
+    let vw = crust::display_width(&version);
+    let foot = format!(" {}", take(&foot, w.saturating_sub(vw + 3)));
+    let pad = w.saturating_sub(crust::display_width(&foot) + vw);
     out.push_str(&format!(
         "{}{}{}",
         Cursor::at(1, rows),
         style::rgb(&format!("{foot}{}", " ".repeat(pad)), Some((200, 200, 205)), Some(BAR_BG), ""),
-        style::rgb(&version, Some(DIM_RGB), Some(BAR_BG), "")
+        style::rgb(&version, None, Some(BAR_BG), "")
     ));
     print!("{out}");
     std::io::stdout().flush().ok();
