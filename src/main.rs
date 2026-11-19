@@ -24,7 +24,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, CreateWindowAux, EventMask, GrabMode, ImageFormat, ModMask, WindowClass,
+    ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, EventMask, GrabMode, ImageFormat,
+    ModMask, WindowClass,
 };
 use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
@@ -43,6 +44,9 @@ enum Msg {
     Key(bool),
     /// Start a quiet spell of this many minutes, or end the one running.
     Quiet(u32),
+    /// The window manager changed the workspace or the window in front,
+    /// which may have covered the boxes: they go back on top.
+    Raise,
 }
 
 /// The id of herald's own boxes, the ones about a quiet spell.
@@ -204,7 +208,13 @@ fn run(cfg: Config) -> Result<(), String> {
         .and_then(|b| b.build())
         .map_err(|e| format!("cannot take {IFACE} on the session bus (is dunst running?): {e}"))?;
 
-    // The X side: clicks, redraws and the two keys, forwarded as they come.
+    // The two root properties tile changes when it puts other windows in
+    // front: a switch of workspace, and a switch of window.
+    let atom = |name: &str| conn.intern_atom(false, name.as_bytes()).ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.atom);
+    let (desk, front) = (atom("_NET_CURRENT_DESKTOP"), atom("_NET_ACTIVE_WINDOW"));
+
+    // The X side: clicks, redraws, the two keys and the root's changes,
+    // forwarded as they come.
     {
         let conn = conn.clone();
         let tx = tx.clone();
@@ -216,6 +226,7 @@ fn run(cfg: Config) -> Result<(), String> {
                 Event::ButtonPress(e) => Msg::Click(e.event),
                 Event::Expose(e) if e.count == 0 => Msg::Expose(e.window),
                 Event::KeyPress(e) => Msg::Key(u16::from(e.state) & u16::from(ModMask::SHIFT) != 0),
+                Event::PropertyNotify(e) if e.atom != 0 && (e.atom == desk || e.atom == front) => Msg::Raise,
                 _ => continue,
             };
             if tx.send(msg).is_err() {
@@ -228,6 +239,7 @@ fn run(cfg: Config) -> Result<(), String> {
     let space = keycode_for(&conn, 0x20);
     let mut popups: Vec<Popup> = Vec::new();
     let mut grabbed = false;
+    let mut watching = false;
     // During a quiet spell notifications wait here instead of showing.
     let mut quiet_until: Option<Instant> = None;
     let mut held: Vec<Note> = Vec::new();
@@ -307,6 +319,8 @@ fn run(cfg: Config) -> Result<(), String> {
                     put(&conn, p);
                 }
             }
+            // place() below puts every box back on top.
+            Ok(Msg::Raise) => {}
             Ok(Msg::Key(all)) => {
                 let ids: Vec<u32> = if all { popups.iter().map(|p| p.id).collect() } else { popups.last().map(|p| p.id).into_iter().collect() };
                 closed.extend(ids.into_iter().map(|id| (id, 2)));
@@ -347,6 +361,13 @@ fn run(cfg: Config) -> Result<(), String> {
                 grab(&conn, root, kc, false);
                 grabbed = false;
             }
+        }
+        // Watch the root only while a box is up: with none, a workspace
+        // switch wakes nothing here.
+        if watching == popups.is_empty() {
+            watching = !watching;
+            let mask = if watching { EventMask::PROPERTY_CHANGE } else { EventMask::NO_EVENT };
+            let _ = conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(mask));
         }
         let _ = conn.flush();
     }
